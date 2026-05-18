@@ -1,0 +1,682 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SME Attendance Pro</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- QR Code Generator -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrious/4.0.2/qrious.min.js"></script>
+    <!-- Stable SheetJS (Excel Engine) -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <style>
+        @keyframes progress { from { width: 100%; } to { width: 0%; } }
+        .animate-progress { animation: progress 10s linear infinite; }
+        .view { display: none; }
+        .view.active { display: block; }
+    </style>
+</head>
+<body class="bg-slate-100 font-sans antialiased">
+    <div id="app" class="max-w-md mx-auto min-h-screen bg-white shadow-2xl relative flex flex-col">
+        
+        <!-- Navigation Header -->
+        <nav class="bg-blue-800 p-4 text-white flex justify-between items-center shadow-md">
+            <h1 class="font-black text-xl italic" id="view-title">QR ENTRY</h1>
+            <div class="flex gap-6">
+                <button onclick="switchView('screen')"><i data-lucide="monitor"></i></button>
+                <button onclick="switchView('staff')"><i data-lucide="user"></i></button>
+                <button onclick="askAdmin()"><i data-lucide="settings"></i></button>
+            </div>
+        </nav>
+
+        <!-- Message Toast -->
+        <div id="toast" class="fixed top-20 left-1/2 -translate-x-1/2 z-[120] hidden w-80">
+            <div class="bg-gray-800 text-white px-6 py-4 rounded-2xl shadow-2xl font-bold flex flex-col items-center gap-2 text-center text-sm">
+                <span id="toast-msg"></span>
+            </div>
+        </div>
+
+        <main class="flex-grow p-6 overflow-y-auto">
+            <!-- 1. DOOR SCANNER VIEW -->
+            <section id="view-screen" class="view active text-center space-y-6">
+                <div class="space-y-1.5 pt-2">
+                    <h2 class="text-3xl font-black text-gray-800 uppercase leading-none">DOOR SCANNER</h2>
+                    <p class="text-xs text-gray-400 font-bold">Show this screen on the entrance tablet</p>
+                </div>
+
+                <!-- Sandbox Blob Warning Banner -->
+                <div id="blob-warning" class="hidden mx-auto max-w-xs p-4 bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-2xl font-bold text-left space-y-1 shadow-sm">
+                    <div class="flex items-center gap-1.5 text-amber-900">
+                        <i data-lucide="alert-triangle" class="w-4 h-4"></i>
+                        <span>Preview Environment Detected</span>
+                    </div>
+                    <p class="font-medium opacity-90 leading-relaxed">The QR code current represents a local "blob:" session. To test scanning on real phones, set your <b>App Live URL</b> in the Boss settings panel.</p>
+                </div>
+
+                <div class="relative w-72 h-72 mx-auto p-4 border-[12px] border-blue-50 rounded-[50px] bg-white flex items-center justify-center shadow-inner">
+                    <canvas id="qr-canvas"></canvas>
+                </div>
+                <div class="max-w-xs mx-auto space-y-2">
+                    <div class="w-full h-3 bg-gray-100 rounded-full overflow-hidden">
+                        <div id="progress-bar" class="h-full bg-blue-600 animate-progress"></div>
+                    </div>
+                    <p class="text-[10px] font-black text-blue-600 uppercase tracking-wider">REFRESHING IN <span id="timer">10</span>S</p>
+                    <p class="text-[9px] font-mono text-slate-300 break-all" id="qr-payload-display"></p>
+                </div>
+            </section>
+
+            <!-- 2. STAFF VIEW -->
+            <section id="view-staff" class="view space-y-6">
+                <!-- Sandbox Testing Tool -->
+                <div class="bg-amber-50 p-4 rounded-3xl border border-amber-200 space-y-3">
+                    <div class="flex items-center gap-1.5 text-amber-800">
+                        <i data-lucide="flask-conical" class="w-4 h-4"></i>
+                        <span class="text-[11px] font-black uppercase tracking-wider">Sandbox Tester (Demo Only)</span>
+                    </div>
+                    
+                    <div class="grid grid-cols-2 gap-2">
+                        <div>
+                            <label class="text-[9px] text-amber-700 font-bold uppercase block mb-1">Select Employee</label>
+                            <select id="staff-selector" onchange="changeActiveStaff(this.value)" class="w-full p-2 bg-white rounded-lg border border-amber-300 text-xs font-bold outline-none">
+                            </select>
+                        </div>
+                        <div>
+                            <label class="text-[9px] text-amber-700 font-bold uppercase block mb-1">Simulated Network</label>
+                            <select id="network-simulator" onchange="changeNetworkSimulation(this.value)" class="w-full p-2 bg-white rounded-lg border border-amber-300 text-xs font-bold outline-none">
+                                <option value="office">At Office (Matched IP)</option>
+                                <option value="home">At Home (Wrong IP)</option>
+                                <option value="real">Real Network Connection</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="text-center bg-gray-50 py-6 rounded-[40px] border border-gray-100">
+                    <p class="text-xs text-gray-400 uppercase font-bold">Logged In As</p>
+                    <h2 class="text-4xl font-black text-gray-900 mt-1" id="current-staff-name">John Doe</h2>
+                    <p id="staff-status" class="mt-2 font-bold uppercase">OFF WORK</p>
+                </div>
+
+                <!-- Network Lock Status Card -->
+                <div id="ip-status-container" class="p-4 rounded-2xl border text-center text-xs font-bold space-y-1">
+                    <p>Detecting network status...</p>
+                </div>
+
+                <div id="action-btn-container" class="py-2"></div>
+                
+                <div class="space-y-3 pt-4 border-t">
+                    <h3 class="font-black text-slate-300 uppercase text-[10px] tracking-widest px-2">Your Logs Today</h3>
+                    <div id="staff-logs-container" class="space-y-2"></div>
+                </div>
+            </section>
+
+            <!-- 3. BOSS PANEL (ADMIN) -->
+            <section id="view-boss" class="view space-y-6">
+                <div class="flex justify-between items-center border-b-2 pb-4">
+                    <div>
+                        <h2 class="text-3xl font-black uppercase">PAYROLL</h2>
+                        <p class="text-[10px] text-gray-400 font-bold uppercase">Manage Staff & Salaries</p>
+                    </div>
+                    <button onclick="exportToExcel()" class="bg-green-600 hover:bg-green-700 text-white px-4 py-2.5 rounded-xl text-xs font-black shadow-lg transition-colors">
+                        EXPORT EXCEL
+                    </button>
+                </div>
+
+                <!-- Wi-Fi IP & Domain Settings Area -->
+                <div class="p-5 bg-slate-50 border border-slate-200 rounded-[30px] space-y-5">
+                    
+                    <!-- 1. Domain Settings -->
+                    <div class="space-y-2">
+                        <h3 class="font-black text-sm text-slate-800 uppercase tracking-wide">1. App Live URL (Domain)</h3>
+                        <p class="text-[10px] text-slate-400 leading-normal">Enter your Netlify or production URL here. The QR code generator will use this URL instead of the local preview session.</p>
+                        <input type="text" id="app-url-input" class="w-full border border-slate-200 rounded-xl p-3 text-xs font-mono" placeholder="e.g. https://mycompany.netlify.app">
+                    </div>
+
+                    <hr class="border-slate-200">
+
+                    <!-- 2. IP Lock Settings -->
+                    <div class="space-y-3">
+                        <div class="flex justify-between items-center">
+                            <h3 class="font-black text-sm text-slate-800 uppercase tracking-wide">2. Wi-Fi IP Lock Security</h3>
+                            <label class="relative inline-flex items-center cursor-pointer">
+                                <input type="checkbox" id="ip-lock-toggle" onchange="toggleIpLock(this.checked)" class="sr-only peer">
+                                <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                            </label>
+                        </div>
+                        
+                        <div>
+                            <label class="text-[10px] font-bold text-gray-400 uppercase block">Authorized Office IP Address</label>
+                            <input type="text" id="allowed-ip-input" class="w-full border border-slate-200 rounded-xl p-3 text-xs font-mono mt-1" placeholder="e.g. 123.45.67.89">
+                        </div>
+                        <div class="flex gap-2">
+                            <button onclick="detectAndSetCompanyIp()" class="flex-grow py-2.5 bg-blue-100 text-blue-800 rounded-xl text-xs font-bold hover:bg-blue-200">
+                                Get Current IP
+                            </button>
+                        </div>
+                    </div>
+
+                    <hr class="border-slate-200">
+
+                    <button onclick="saveAdminSettings()" class="w-full py-3.5 bg-blue-700 text-white rounded-2xl text-xs font-black uppercase tracking-wider hover:bg-blue-800 shadow-md">
+                        Save Configuration
+                    </button>
+                </div>
+
+                <button onclick="showAddStaffModal()" class="w-full py-3.5 bg-blue-50 text-blue-800 rounded-2xl font-bold text-sm flex items-center justify-center gap-2 hover:bg-blue-100">
+                    <i data-lucide="user-plus" class="w-4 h-4"></i> Add New Employee
+                </button>
+
+                <div id="boss-list" class="space-y-4"></div>
+            </section>
+        </main>
+
+        <!-- Admin Access Password Modal -->
+        <div id="admin-modal" class="fixed inset-0 bg-black/95 z-[100] hidden flex items-center justify-center p-6 backdrop-blur">
+            <div class="bg-white w-full max-w-xs p-8 rounded-[40px] text-center space-y-6 shadow-2xl">
+                <h3 class="font-black text-xl">Admin Password</h3>
+                <input type="password" id="pw-input" class="w-full border-2 border-gray-100 rounded-2xl p-4 text-center text-2xl tracking-widest" placeholder="****">
+                <button onclick="verifyAdmin()" class="w-full py-4 bg-blue-600 text-white rounded-2xl font-bold">LOGIN</button>
+                <button onclick="closeAdmin()" class="text-gray-400 text-xs block mx-auto">Cancel</button>
+            </div>
+        </div>
+
+        <!-- Add Employee Modal -->
+        <div id="add-staff-modal" class="fixed inset-0 bg-black/95 z-[100] hidden flex items-center justify-center p-6 backdrop-blur">
+            <div class="bg-white w-full max-w-xs p-8 rounded-[40px] space-y-6 shadow-2xl">
+                <h3 class="font-black text-xl text-center">Add Employee</h3>
+                <div class="space-y-4">
+                    <div>
+                        <label class="text-[10px] font-bold text-gray-400 uppercase">Name</label>
+                        <input type="text" id="new-staff-name" class="w-full border-2 border-gray-100 rounded-xl p-3 text-sm outline-none focus:border-blue-500" placeholder="e.g. Ali Baba">
+                    </div>
+                    <div>
+                        <label class="text-[10px] font-bold text-gray-400 uppercase">Monthly Salary ($)</label>
+                        <input type="number" id="new-staff-salary" class="w-full border-2 border-gray-100 rounded-xl p-3 text-sm outline-none focus:border-blue-500" placeholder="e.g. 3000">
+                    </div>
+                </div>
+                <div class="flex gap-2">
+                    <button onclick="closeAddStaffModal()" class="flex-1 py-3 bg-gray-100 text-gray-600 rounded-xl text-sm font-bold">Cancel</button>
+                    <button onclick="saveNewStaff()" class="flex-1 py-3 bg-blue-600 text-white rounded-xl text-sm font-bold">Save</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Edit Salary Modal -->
+        <div id="edit-salary-modal" class="fixed inset-0 bg-black/95 z-[100] hidden flex items-center justify-center p-6 backdrop-blur">
+            <div class="bg-white w-full max-w-xs p-8 rounded-[40px] space-y-6 shadow-2xl">
+                <h3 class="font-black text-xl text-center">Adjust Salary</h3>
+                <div>
+                    <label class="text-[10px] font-bold text-gray-400 uppercase">Salary for <span id="edit-salary-name" class="text-blue-600"></span></label>
+                    <input type="number" id="edit-salary-input" class="w-full border-2 border-gray-100 rounded-xl p-3 text-sm mt-2 focus:border-blue-500 outline-none">
+                </div>
+                <input type="hidden" id="edit-salary-id">
+                <div class="flex gap-2">
+                    <button onclick="closeEditSalaryModal()" class="flex-1 py-3 bg-gray-100 text-gray-600 rounded-xl text-sm font-bold">Cancel</button>
+                    <button onclick="saveSalaryAdjustment()" class="flex-1 py-3 bg-blue-600 text-white rounded-xl text-sm font-bold">Update</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Sandbox Clipboard Export Dialog -->
+        <div id="export-sandbox-modal" class="fixed inset-0 bg-black/95 z-[110] hidden flex items-center justify-center p-6 backdrop-blur">
+            <div class="bg-white w-full max-w-sm p-6 rounded-[32px] space-y-4 shadow-2xl">
+                <h3 class="font-black text-lg text-center text-slate-800">Export Backup Tool</h3>
+                <p class="text-xs text-slate-500 text-center">If download is blocked by your browser, copy below and paste into Excel:</p>
+                <textarea id="csv-preview-data" class="w-full h-40 p-4 bg-slate-50 border rounded-2xl font-mono text-[9px] break-all" readonly></textarea>
+                <div class="flex gap-3">
+                    <button onclick="copyDataToClipboard()" class="flex-1 py-3.5 bg-blue-600 text-white font-bold rounded-2xl text-sm">Copy Table Data</button>
+                    <button onclick="closeExportModal()" class="flex-grow-0 px-6 py-3.5 bg-gray-100 text-gray-600 font-bold rounded-2xl text-sm">Close</button>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        // App configurations
+        let config = {
+            ipLockEnabled: true,
+            allowedIp: "123.45.67.89", // Simulated Office Public IP
+            appUrl: ""                 // Configurable Target Website Domain
+        };
+
+        // Core In-Memory Data
+        let staff = [
+            { id: 1, name: 'John Doe', salary: 3000, logs: [
+                { date: '2026-05-18', in: '08:55', out: '18:05' }
+            ]},
+            { id: 2, name: 'Siti Aminah', salary: 2800, logs: [
+                { date: '2026-05-18', in: '08:45', out: null }
+            ]},
+            { id: 3, name: 'Tan Ah Kau', salary: 3500, logs: [] }
+        ];
+
+        let activeStaffId = 1;
+        let qr = null;
+        let simulatedNetworkType = "office"; // office, home, real
+        let computedUserIp = "";
+        let isIpValid = false;
+
+        window.onload = () => {
+            qr = new QRious({ element: document.getElementById('qr-canvas'), size: 280, foreground: '#1e40af' });
+            
+            // Sync Admin inputs
+            document.getElementById('ip-lock-toggle').checked = config.ipLockEnabled;
+            document.getElementById('allowed-ip-input').value = config.allowedIp;
+            document.getElementById('app-url-input').value = config.appUrl;
+
+            setInterval(tick, 10000); 
+            tick(); 
+            populateStaffDropdown();
+            evalNetworkIp();
+            lucide.createIcons();
+        };
+
+        // Refresh QR code
+        function tick() {
+            // Check if running in iframe blob preview environment
+            const isBlob = window.location.href.startsWith('blob:');
+            const warningEl = document.getElementById('blob-warning');
+            
+            if (isBlob && !config.appUrl) {
+                if (warningEl) warningEl.classList.remove('hidden');
+            } else {
+                if (warningEl) warningEl.classList.add('hidden');
+            }
+
+            // Decide which base URL to inject into the scanned QR
+            const baseUrl = config.appUrl ? config.appUrl : window.location.href.split('?')[0];
+            const token = "TOK_" + Math.random().toString(36).substring(7).toUpperCase();
+            const finalPayload = baseUrl + "?t=" + token;
+
+            if (qr) {
+                qr.value = finalPayload;
+                document.getElementById('qr-payload-display').innerText = "VALUE: " + finalPayload;
+            }
+
+            const bar = document.getElementById('progress-bar');
+            if(bar) { bar.style.animation = 'none'; void bar.offsetWidth; bar.style.animation = null; }
+            let s = 10; const t = document.getElementById('timer');
+            const cd = setInterval(() => { s--; if(t) t.innerText = s; if(s <= 0) clearInterval(cd); }, 1000);
+        }
+
+        function switchView(id) {
+            document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+            document.getElementById('view-' + id).classList.add('active');
+            const titles = { screen: 'Door QR', staff: 'Staff Action', boss: 'Boss Payroll' };
+            document.getElementById('view-title').innerText = titles[id];
+            
+            if(id === 'staff') {
+                evalNetworkIp();
+            }
+            render();
+        }
+
+        // Live Public IP Retrieval via Third Party API
+        async function fetchExternalIp() {
+            try {
+                const response = await fetch('https://api.ipify.org?format=json');
+                const data = await response.json();
+                return data.ip;
+            } catch (error) {
+                console.error("External IP lookup failed:", error);
+                return null;
+            }
+        }
+
+        // Network evaluation logic
+        async function evalNetworkIp() {
+            const container = document.getElementById('ip-status-container');
+            if(!container) return;
+
+            container.className = "p-4 rounded-2xl border text-center text-xs font-bold border-yellow-200 bg-yellow-50 text-yellow-800";
+            container.innerHTML = `<p>Analyzing security environment...</p>`;
+
+            if (simulatedNetworkType === "office") {
+                computedUserIp = config.allowedIp;
+            } else if (simulatedNetworkType === "home") {
+                computedUserIp = "192.168.1.100"; // Fake non-matching IP
+            } else {
+                computedUserIp = await fetchExternalIp() || "Detection Offline";
+            }
+
+            if(computedUserIp === "Detection Offline") {
+                isIpValid = false;
+                container.className = "p-4 rounded-2xl border text-center text-xs font-bold border-red-200 bg-red-50 text-red-800";
+                container.innerHTML = `<p>⚠️ Connection Offline. Unable to verify location security.</p>`;
+                render();
+                return;
+            }
+
+            if(!config.ipLockEnabled) {
+                isIpValid = true;
+                container.className = "p-4 rounded-2xl border text-center text-xs font-bold border-green-200 bg-green-50 text-green-800";
+                container.innerHTML = `<p>✅ Security bypass active (IP check disabled).</p><p class="text-[10px] opacity-70">IP: ${computedUserIp}</p>`;
+            } else if(computedUserIp === config.allowedIp) {
+                isIpValid = true;
+                container.className = "p-4 rounded-2xl border text-center text-xs font-bold border-green-200 bg-green-50 text-green-800";
+                container.innerHTML = `<p>✅ Connected to Office Secured Network.</p><p class="text-[10px] opacity-70">IP: ${computedUserIp}</p>`;
+            } else {
+                isIpValid = false;
+                container.className = "p-4 rounded-2xl border text-center text-xs font-bold border-red-200 bg-red-50 text-red-800";
+                container.innerHTML = `<p>❌ Locked: Not connected to Company Wi-Fi.</p><p class="text-[10px] opacity-70">Your IP: ${computedUserIp} (Office requires: ${config.allowedIp})</p>`;
+            }
+            render();
+        }
+
+        // Switch simulator network type
+        function changeNetworkSimulation(val) {
+            simulatedNetworkType = val;
+            evalNetworkIp();
+        }
+
+        // Capture network IP
+        async function detectAndSetCompanyIp() {
+            showToast("Querying current public network IP...");
+            const detected = await fetchExternalIp();
+            if(detected) {
+                document.getElementById('allowed-ip-input').value = detected;
+                showToast("Captured IP: " + detected);
+            } else {
+                showToast("Lookup failed. Check internet access.");
+            }
+        }
+
+        function saveAdminSettings() {
+            const urlVal = document.getElementById('app-url-input').value.trim();
+            const ipVal = document.getElementById('allowed-ip-input').value.trim();
+            
+            config.appUrl = urlVal;
+            config.allowedIp = ipVal;
+            
+            showToast("Settings Saved Successfully!");
+            evalNetworkIp();
+            tick(); // trigger instant QR refresh with new domain
+        }
+
+        function toggleIpLock(enabled) {
+            config.ipLockEnabled = enabled;
+            showToast("Security Lock " + (enabled ? "Activated" : "Deactivated"));
+            evalNetworkIp();
+        }
+
+        function populateStaffDropdown() {
+            const selector = document.getElementById('staff-selector');
+            if(selector) {
+                selector.innerHTML = staff.map(s => `<option value="${s.id}" ${s.id === activeStaffId ? 'selected' : ''}>${s.name}</option>`).join('');
+            }
+        }
+
+        function changeActiveStaff(id) {
+            activeStaffId = parseInt(id);
+            render();
+        }
+
+        function render() {
+            const me = staff.find(s => s.id === activeStaffId) || staff[0];
+            document.getElementById('current-staff-name').innerText = me.name;
+            
+            const btnBox = document.getElementById('action-btn-container');
+            const statusLabel = document.getElementById('staff-status');
+            const isWorking = me.logs.length > 0 && !me.logs[me.logs.length-1].out;
+
+            if(btnBox) {
+                statusLabel.innerText = isWorking ? "CURRENTLY: ON SHIFT" : "CURRENTLY: OFF SHIFT";
+                statusLabel.className = isWorking ? "mt-2 font-black text-green-600" : "mt-2 font-black text-gray-400";
+                
+                if(config.ipLockEnabled && !isIpValid) {
+                    btnBox.innerHTML = `
+                        <button class="w-full py-12 bg-slate-300 text-slate-400 rounded-[40px] font-black text-4xl cursor-not-allowed border-b-8 border-slate-400" disabled>
+                            LOCKED
+                        </button>
+                    `;
+                } else {
+                    btnBox.innerHTML = isWorking ? 
+                        `<button onclick="punch('out')" class="w-full py-12 bg-red-500 text-white rounded-[40px] font-black text-5xl shadow-xl border-b-8 border-red-700 active:translate-y-1">CLOCK OUT</button>` :
+                        `<button onclick="punch('in')" class="w-full py-12 bg-green-600 text-white rounded-[40px] font-black text-5xl shadow-xl border-b-8 border-green-700 active:translate-y-1">CLOCK IN</button>`;
+                }
+            }
+
+            const logsContainer = document.getElementById('staff-logs-container');
+            if(logsContainer) {
+                const todayLogs = me.logs.filter(l => l.date === new Date().toISOString().split('T')[0]);
+                if(todayLogs.length === 0) {
+                    logsContainer.innerHTML = `<p class="text-center text-slate-300 py-6 italic text-xs">No logs for today.</p>`;
+                } else {
+                    logsContainer.innerHTML = todayLogs.map(l => `
+                        <div class="p-4 bg-slate-50 border border-slate-100 rounded-2xl space-y-2">
+                            <div class="flex justify-between items-center text-xs font-bold text-slate-700">
+                                <span>DATE: ${l.date}</span>
+                                <span class="text-green-600">IN: ${l.in}</span>
+                            </div>
+                            <div class="flex justify-between items-center text-xs font-bold text-slate-700">
+                                <span>SHIFT SUMMARY</span>
+                                <span class="${l.out ? 'text-red-500' : 'text-amber-500'}">OUT: ${l.out || 'WORKING'}</span>
+                            </div>
+                        </div>
+                    `).join('');
+                }
+            }
+
+            const bossList = document.getElementById('boss-list');
+            if(bossList) {
+                bossList.innerHTML = staff.map(s => `
+                    <div class="p-6 bg-slate-50 rounded-[30px] border border-slate-100 space-y-4">
+                        <div class="flex justify-between items-center">
+                            <div>
+                                <p class="font-black text-lg text-slate-800">${s.name}</p>
+                                <p class="text-xs text-slate-400 font-bold uppercase">Work Records: ${s.logs.length}</p>
+                            </div>
+                            <div class="text-right">
+                                <p class="font-black text-blue-800 text-xl">$${s.salary}</p>
+                                <p class="text-[9px] text-slate-400 font-bold">SALARY BASE</p>
+                            </div>
+                        </div>
+                        <div class="flex gap-2">
+                            <button onclick="showEditSalaryModal(${s.id}, '${s.name}', ${s.salary})" class="flex-1 py-2 bg-blue-50 text-blue-700 text-xs font-bold rounded-xl flex items-center justify-center gap-1">
+                                Adjust Base
+                            </button>
+                            <button onclick="removeStaff(${s.id})" class="px-4 py-2 bg-red-50 text-red-600 text-xs font-bold rounded-xl flex items-center justify-center">
+                                <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                            </button>
+                        </div>
+                    </div>`).join('');
+            }
+            lucide.createIcons();
+        }
+
+        function punch(type) {
+            const now = new Date();
+            const time = now.getHours().toString().padStart(2,'0') + ":" + now.getMinutes().toString().padStart(2,'0');
+            const date = now.toISOString().split('T')[0];
+            const me = staff.find(s => s.id === activeStaffId);
+
+            if(type === 'in') {
+                me.logs.push({ date, in: time, out: null });
+            } else {
+                if(me.logs.length > 0 && !me.logs[me.logs.length-1].out) {
+                    me.logs[me.logs.length-1].out = time;
+                }
+            }
+            showToast("ATTENDANCE STORED!");
+            render();
+        }
+
+        function showAddStaffModal() {
+            document.getElementById('add-staff-modal').classList.remove('hidden');
+        }
+        function closeAddStaffModal() {
+            document.getElementById('add-staff-modal').classList.add('hidden');
+            document.getElementById('new-staff-name').value = '';
+            document.getElementById('new-staff-salary').value = '';
+        }
+        function saveNewStaff() {
+            const name = document.getElementById('new-staff-name').value.trim();
+            const salary = parseInt(document.getElementById('new-staff-salary').value);
+
+            if(!name || isNaN(salary)) {
+                showToast("Please insert complete data.");
+                return;
+            }
+
+            const newId = Date.now();
+            staff.push({ id: newId, name, salary, logs: [] });
+            
+            closeAddStaffModal();
+            populateStaffDropdown();
+            showToast("Added " + name);
+            render();
+        }
+
+        function showEditSalaryModal(id, name, currentSalary) {
+            document.getElementById('edit-salary-id').value = id;
+            document.getElementById('edit-salary-name').innerText = name;
+            document.getElementById('edit-salary-input').value = currentSalary;
+            document.getElementById('edit-salary-modal').classList.remove('hidden');
+        }
+        function closeEditSalaryModal() {
+            document.getElementById('edit-salary-modal').classList.add('hidden');
+        }
+        function saveSalaryAdjustment() {
+            const id = parseInt(document.getElementById('edit-salary-id').value);
+            const newSalary = parseInt(document.getElementById('edit-salary-input').value);
+
+            if(isNaN(newSalary)) {
+                showToast("Enter a valid number.");
+                return;
+            }
+
+            const emp = staff.find(s => s.id === id);
+            if(emp) {
+                emp.salary = newSalary;
+                showToast("Salary updated!");
+            }
+            closeEditSalaryModal();
+            render();
+        }
+
+        function removeStaff(id) {
+            if(staff.length <= 1) {
+                showToast("Need to retain at least 1 record.");
+                return;
+            }
+            staff = staff.filter(s => s.id !== id);
+            if(activeStaffId === id) {
+                activeStaffId = staff[0].id;
+            }
+            populateStaffDropdown();
+            showToast("Employee removed.");
+            render();
+        }
+
+        function showToast(msg) {
+            const t = document.getElementById('toast');
+            const m = document.getElementById('toast-msg');
+            m.innerText = msg;
+            t.classList.remove('hidden');
+            setTimeout(() => t.classList.add('hidden'), 3000);
+        }
+
+        // --- EXPORT MATRIX TO EXCEL & BACKUP COPY TOOL ---
+        function exportToExcel() {
+            showToast("Preparing Excel sheets...");
+            
+            let csvBackup = "Employee Name,Base Salary,Days Logged,Hours Logged\n";
+            try {
+                const wb = XLSX.utils.book_new();
+
+                // 1. Calculate and map summary data
+                const summaryData = staff.map(s => {
+                    const totalMins = s.logs.reduce((acc, log) => {
+                        if(!log.in || !log.out) return acc;
+                        const [inH, inM] = log.in.split(':').map(Number);
+                        const [outH, outM] = log.out.split(':').map(Number);
+                        return acc + ((outH * 60 + outM) - (inH * 60 + inM));
+                    }, 0);
+                    
+                    const hours = (totalMins / 60).toFixed(2);
+                    csvBackup += `${s.name},${s.salary},${s.logs.length},${hours}\n`;
+                    
+                    return {
+                        "Employee Name": s.name,
+                        "Base Salary": s.salary,
+                        "Work Days": s.logs.length,
+                        "Total Hours Worked": hours
+                    };
+                });
+                const wsSummary = XLSX.utils.json_to_sheet(summaryData);
+                XLSX.utils.book_append_sheet(wb, wsSummary, "MONTH_SUMMARY");
+
+                // 2. Map detailed daily logs per individual tab
+                staff.forEach(s => {
+                    const indData = s.logs.map(log => {
+                        let mins = 0;
+                        if(log.in && log.out) {
+                            const [inH, inM] = log.in.split(':').map(Number);
+                            const [outH, outM] = log.out.split(':').map(Number);
+                            mins = (outH * 60 + outM) - (inH * 60 + inM);
+                        }
+                        return {
+                            "Date": log.date,
+                            "Clock In": log.in,
+                            "Clock Out": log.out || "WORKING",
+                            "Active Minutes": mins
+                        };
+                    });
+                    const wsInd = XLSX.utils.json_to_sheet(indData);
+                    XLSX.utils.book_append_sheet(wb, wsInd, s.name.substring(0, 30));
+                });
+
+                // Write binary data for automatic download
+                const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+                const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+                const url = URL.createObjectURL(blob);
+                const fileName = `SME_Payroll_${new Date().toISOString().slice(0,10)}.xlsx`;
+
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = fileName;
+                document.body.appendChild(a);
+                a.click();
+                
+                setTimeout(() => {
+                    document.body.removeChild(a);
+                    showToast("Download Triggered!");
+                }, 400);
+
+            } catch (err) {
+                console.error("Auto download intercepted:", err);
+            }
+
+            // Always display fallback clipboard panel inside canvas environment
+            document.getElementById('csv-preview-data').value = csvBackup;
+            document.getElementById('export-sandbox-modal').classList.remove('hidden');
+        }
+
+        function closeExportModal() {
+            document.getElementById('export-sandbox-modal').classList.add('hidden');
+        }
+
+        function copyDataToClipboard() {
+            const t = document.getElementById('csv-preview-data');
+            t.select();
+            document.execCommand('copy');
+            showToast("Copied to Clipboard!");
+        }
+
+        // Admin Access Credentials Verification
+        function askAdmin() { document.getElementById('admin-modal').classList.remove('hidden'); }
+        function closeAdmin() { document.getElementById('admin-modal').classList.add('hidden'); }
+        function verifyAdmin() {
+            if(document.getElementById('pw-input').value === '1234') {
+                closeAdmin(); switchView('boss'); document.getElementById('pw-input').value = '';
+            } else {
+                showToast("WRONG PASSWORD");
+            }
+        }
+    </script>
+</body>
+</html>
